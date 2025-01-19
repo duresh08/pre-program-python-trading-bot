@@ -1,2 +1,4 @@
 data.db/
+.venv/
+.idea/
 
