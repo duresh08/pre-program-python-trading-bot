@@ -111,30 +111,48 @@ def lightgbm_model_training(train_df, hyperparameters, cv_df=None, categorical_f
         'reg_lambda': int(hyperparameters['reg_lambda']),
         'reg_alpha': int(hyperparameters['reg_alpha']),
         'learning_rate': hyperparameters['learning_rate'],
-        'metric': hyperparameters['metric'],
-        'random_state': hyperparameters['random_state'],
-        'objective': hyperparameters['objective'],
-        'verbosity': hyperparameters['verbosity'],
-        'max_bin': 1000
+        'max_bin': 1000,
+        'metric': 'rmse',
+        'random_state': 0,
+        'objective': 'regression',
+        'verbosity': verbose,
+        'early_stopping_rounds': early_stopping_rounds,
+        'device': 'gpu'
     }
-    if X_cv is not None:
-        train_data = lgb.Dataset(X_train, label=y_train, weight=train_weights.squeeze(),
-                                 categorical_feature=categorical_features)
-        test_data = lgb.Dataset(X_cv, label=y_cv, weight=cv_weights.squeeze(),
-                                categorical_feature=categorical_features,
-                                reference=train_data)
+    if categorical_features is not None:
+        train_df.loc[:, categorical_features] = train_df.loc[:, categorical_features].astype('category')
+        categorical_indices = [train_df.columns.get_loc(col) for col in categorical_features if col in train_df.columns]
+    else:
+        categorical_indices = []
+    X_train = train_df.loc[:, list(train_df.drop(columns=['returns_3_mo']).columns)]
+    y_train = train_df.loc[:, ['returns_3_mo']]
 
-        model = lgb.train(params, train_data, num_boost_round=int(space['num_boost_round']),
+    if cv_df is not None:
+        if categorical_features is not None:
+            cv_df.loc[:, categorical_features] = cv_df.loc[:, categorical_features].astype('category')
+            categorical_indices = [cv_df.columns.get_loc(col) for col in categorical_features if
+                                   col in cv_df.columns]
+        else:
+            categorical_indices = []
+        X_cv = cv_df.loc[:, list(cv_df.drop(columns=['returns_3_mo']).columns)]
+        y_cv = cv_df.loc[:, ['returns_3_mo']]
+    else:
+        X_cv = None
+        y_cv = None
+
+    if cv_df is not None:
+        train_data = lgb.Dataset(X_train, label=y_train,
+                                 categorical_feature=categorical_indices)
+        test_data = lgb.Dataset(X_cv, label=y_cv,
+                                categorical_feature=categorical_indices,
+                                reference=train_data)
+        model = lgb.train(params, train_data, num_boost_round=int(hyperparameters['num_boost_round']),
                           valid_sets=[train_data, test_data],
                           callbacks=[lgb.early_stopping(stopping_rounds=early_stopping_rounds),
-                                     lgb.log_evaluation(period=verbose)],
-                          categorical_feature=categorical_features)
+                                     lgb.log_evaluation(period=verbose)])
     else:
-        train_data = lgb.Dataset(X_train, label=y_train, weight=train_weights.squeeze(),
-                                 categorical_feature=categorical_features)
-
-        model = lgb.train(params, train_data, num_boost_round=int(space['num_boost_round']),
-                          categorical_feature=categorical_features)
+        train_data = lgb.Dataset(X_train, label=y_train, categorical_feature=categorical_indices)
+        model = lgb.train(params, train_data, num_boost_round=int(hyperparameters['num_boost_round']))
     return model
 
 
@@ -188,12 +206,6 @@ if __name__ == '__main__':
         'reg_alpha': hp.quniform('reg_alpha', 0, 50 + 1, 1),
         'learning_rate': hp.uniform('learning_rate', 0.005, 0.3),
         'num_boost_round': hp.quniform('num_boost_round', 100, 5000, 50),
-        'metric': 'rmse',
-        'random_state': 0,
-        'objective': 'regression',
-        'verbosity': 3,
-        'early_stopping_rounds': 50,
-        'device': 'gpu'
     }
     db_path = "D:\\pre-program-python-trading-bot\\data.db\\data.db"
     df = pull_data_from_db("2000-01-01", "2002-01-01", db_path)
