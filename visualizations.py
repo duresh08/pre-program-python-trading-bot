@@ -4,7 +4,9 @@ from tqdm import tqdm
 from pandas.tseries.offsets import DateOffset
 import lightgbm as lgb
 from hyperopt import hp, STATUS_OK, fmin, Trials, tpe
+import warnings
 
+warnings.filterwarnings('ignore')
 pd.set_option('display.max_columns', None)
 
 
@@ -29,7 +31,7 @@ def pre_process_data(df):
     cols_to_drop = ['id', 'reported_currency']
     df = df.drop(columns=cols_to_drop)
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
-    df['date'] = pd.to_datetime(df['date'], format='mixed')
+    df['date'] = pd.to_datetime(df['date'], format='%Y-%m-%d')
     return df
 
 
@@ -77,7 +79,6 @@ def lightgbm_categorical_training_pipeline(X_train, y_train, train_weights, X_cv
         'random_state': space['random_state'],
         'objective': space['objective'],
         'verbosity': space['verbosity'],
-        'max_bin': 1000
     }
     if X_cv is not None:
         train_data = lgb.Dataset(X_train, label=y_train, weight=train_weights.squeeze(),
@@ -104,38 +105,23 @@ def lightgbm_model_training(train_df, hyperparameters, cv_df=None, categorical_f
                             verbose=10):
     params = {
         'max_depth': int(hyperparameters['max_depth']),
-        'num_leaves': int(hyperparameters['num_leaves']),
+        'num_leaves': 2 ** (int(hyperparameters['max_depth']) - 1),
         'subsample': hyperparameters['subsample'],
         'colsample_bytree': hyperparameters['colsample_bytree'],
-        'min_child_weight': int(hyperparameters['min_child_weight']),
         'reg_lambda': int(hyperparameters['reg_lambda']),
         'reg_alpha': int(hyperparameters['reg_alpha']),
         'learning_rate': hyperparameters['learning_rate'],
-        'max_bin': 1000,
         'metric': 'rmse',
         'random_state': 0,
         'objective': 'regression',
         'verbosity': verbose,
         'early_stopping_rounds': early_stopping_rounds,
-        'device': 'gpu'
+        'device': 'cpu'
     }
-    if categorical_features is not None:
-        train_df.loc[:, categorical_features] = train_df.loc[:, categorical_features].astype('category')
-        categorical_indices = [train_df.columns.get_loc(col) for col in categorical_features if col in train_df.columns]
-    else:
-        categorical_indices = []
-    X_train = train_df.loc[:, list(train_df.drop(columns=['returns_3_mo']).columns)]
-    y_train = train_df.loc[:, ['returns_3_mo']]
+    X_train, categorical_indices, y_train = categorify_and_return(categorical_features, train_df)
 
     if cv_df is not None:
-        if categorical_features is not None:
-            cv_df.loc[:, categorical_features] = cv_df.loc[:, categorical_features].astype('category')
-            categorical_indices = [cv_df.columns.get_loc(col) for col in categorical_features if
-                                   col in cv_df.columns]
-        else:
-            categorical_indices = []
-        X_cv = cv_df.loc[:, list(cv_df.drop(columns=['returns_3_mo']).columns)]
-        y_cv = cv_df.loc[:, ['returns_3_mo']]
+        X_cv, categorical_indices, y_cv = categorify_and_return(categorical_features, cv_df)
     else:
         X_cv = None
         y_cv = None
@@ -156,19 +142,32 @@ def lightgbm_model_training(train_df, hyperparameters, cv_df=None, categorical_f
     return model
 
 
-def k_fold_cv(df, n_folds=3, train_n_months=15, cv_n_months=3):
+def categorify_and_return(categorical_features, train_df):
+    if categorical_features is not None:
+        train_df.loc[:, categorical_features] = train_df.loc[:, categorical_features].astype('category')
+        categorical_indices = [train_df.columns.get_loc(col) for col in categorical_features if col in train_df.columns]
+    else:
+        categorical_indices = []
+    X_train = train_df.loc[:, list(train_df.drop(columns=['returns_3_mo', 'date']).columns)]
+    y_train = train_df.loc[:, ['returns_3_mo']]
+    return X_train, categorical_indices, y_train
+
+
+def evaluate_model(model, val_set, categorical_features=None, top_n_stock_picks=100):
+    X_test, categorical_indices, y_test = categorify_and_return(categorical_features, val_set)
+    y_pred = model.predict(X_test).reshape(X_test.shape[0], 1)
+    val_set['y_pred'] = y_pred
+    return
+
+
+def k_fold_cv(df, hyperparameters, n_folds=3, train_n_months=15, cv_n_months=3, categorical_features=None):
     unique_dates = pd.to_datetime(df['date']).sort_values().unique()
     for fold in range(n_folds):
         val_end_date = unique_dates[-1] - pd.DateOffset(months=fold * cv_n_months)
         val_start_date = unique_dates[-1] - pd.DateOffset(months=(fold + 1) * cv_n_months)
-
-        # Get the start of the training window
         train_start_date = val_start_date - pd.DateOffset(months=train_n_months)
-
-        # Filter train and validation sets
         train_set = df[(df['date'] > train_start_date) & (df['date'] <= val_start_date)]
         val_set = df[(df['date'] > val_start_date) & (df['date'] <= val_end_date)]
-
         print("\n\n")
         print("train_set end_date: {}, start_date: {}, num_dates: {}".format(train_set['date'].astype(str).max(),
                                                                              train_set['date'].astype(str).min(),
@@ -176,15 +175,18 @@ def k_fold_cv(df, n_folds=3, train_n_months=15, cv_n_months=3):
         print("val_set end_date: {}, start_date: {}, num_dates: {}".format(val_set['date'].astype(str).max(),
                                                                            val_set['date'].astype(str).min(),
                                                                            len(val_set['date'].unique())))
+        model = lightgbm_model_training(train_set, hyperparameters, cv_df=val_set,
+                                        categorical_features=categorical_features)
+        evaluate_model(model, val_set, categorical_features=categorical_features)
+        print("done")
 
 
 if __name__ == '__main__':
-    lgb_hyperparameter_space = {
+    lgb_hyperparameters = {
         'max_depth': 13,
-        'num_leaves': 1024,
+        'num_leaves': 2 ** (13 - 1),
         'subsample': 0.609,
         'colsample_bytree': 0.632,
-        'min_child_weight': 4,
         'reg_lambda': 101,
         'reg_alpha': 88,
         'learning_rate': 0.013,
@@ -192,23 +194,21 @@ if __name__ == '__main__':
         'metric': 'rmse',
         'random_state': 0,
         'objective': 'regression',
-        'verbosity': 3,
-        'early_stopping_rounds': 50,
         'device': 'gpu'
     }
     hyperparameter_space = {
         'max_depth': hp.quniform('max_depth', 3, 15 + 1, 1),
-        'num_leaves': hp.choice('num_leaves', [2 ** i for i in range(1, 12)]),
         'subsample': hp.uniform('subsample', 0.5, 1),
         'colsample_bytree': hp.uniform('colsample_bytree', 0.5, 1),
-        'min_child_weight': hp.quniform('min_child_weight', 0, 10 + 1, 1),
         'reg_lambda': hp.quniform('reg_lambda', 0, 100 + 1, 1),
         'reg_alpha': hp.quniform('reg_alpha', 0, 50 + 1, 1),
         'learning_rate': hp.uniform('learning_rate', 0.005, 0.3),
         'num_boost_round': hp.quniform('num_boost_round', 100, 5000, 50),
     }
-    db_path = "D:\\pre-program-python-trading-bot\\data.db\\data.db"
+    categorical_features = ['symbol']
+    db_path = "C:\\Users\\dhruv.suresh\\Downloads\\data.db\\data.db"
     df = pull_data_from_db("2000-01-01", "2002-01-01", db_path)
     df = pre_process_data(df)
     df = finding_3_mo_returns(df)
-    k_fold_cv(df, n_folds=2, train_n_months=15, cv_n_months=3)
+    k_fold_cv(df, lgb_hyperparameters, n_folds=2, train_n_months=15, cv_n_months=3,
+              categorical_features=categorical_features)
