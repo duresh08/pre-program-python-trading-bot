@@ -285,7 +285,7 @@ def k_fold_cv(df, hyperparameters, n_folds=3, train_n_months=15, cv_n_months=3, 
     return performance_df
 
 
-def hyperparameter_optimization_pipeline(optimization_space, max_evals=100, categorical_features=None):
+def hyperparameter_optimization_pipeline(df, optimization_space, max_evals=100, categorical_features=None):
     trials = Trials()
     best_hyper_params = fmin(
         fn=lambda space: k_fold_cv(df, space, n_folds=3, train_n_months=15, cv_n_months=3,
@@ -301,14 +301,14 @@ def hyperparameter_optimization_pipeline(optimization_space, max_evals=100, cate
 
 if __name__ == '__main__':
     lgb_hyperparameters = {
-        'max_depth': 13,
-        'num_leaves': 2 ** (13 - 1),
-        'subsample': 0.609,
-        'colsample_bytree': 0.632,
-        'reg_lambda': 101,
-        'reg_alpha': 88,
-        'learning_rate': 0.013,
-        'num_boost_round': 325,
+        'max_depth': 12,
+        'num_leaves': 2 ** (12 - 1),
+        'subsample': 0.790005627,
+        'colsample_bytree': 0.875694597,
+        'reg_lambda': 58,
+        'reg_alpha': 9,
+        'learning_rate': 0.226591168,
+        'num_boost_round': 4100,
         'metric': 'rmse',
         'random_state': 0,
         'objective': 'regression',
@@ -324,10 +324,10 @@ if __name__ == '__main__':
         'num_boost_round': hp.quniform('num_boost_round', 100, 5000, 50),
     }
     categorical_features = ['symbol']
-    db_path = "D:\\pre-program-python-trading-bot\\data.db\\data.db"
+    db_path = "C:\\Users\\dhruv.suresh\\Downloads\\data.db\\data.db"
     df = pull_data_from_db("2000-01-01", "2005-12-31", db_path)
     df = pre_process_data(df)
     df = finding_3_mo_returns(df)
     # k_fold_cv(df, lgb_hyperparameters, n_folds=3, train_n_months=15, cv_n_months=3,
     #           categorical_features=categorical_features)
-    hyperparameter_optimization_pipeline(hyperparameter_space, max_evals=100, categorical_features=categorical_features)
+    hyperparameter_optimization_pipeline(df, hyperparameter_space, max_evals=100, categorical_features=categorical_features)
