@@ -1,12 +1,13 @@
 import os
 import time
+import matplotlib.pyplot as plt
 import warnings
 from functools import wraps
 import gc
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-from hyperopt import hp
+from hyperopt import hp, STATUS_OK, fmin, Trials, tpe
 from tqdm import tqdm
 
 warnings.filterwarnings('ignore')
@@ -83,6 +84,7 @@ def lightgbm_categorical_training_pipeline(X_train, y_train, train_weights, X_cv
         'objective': space['objective'],
         'verbosity': space['verbosity'],
     }
+    eval_results = {}
     if X_cv is not None:
         train_data = lgb.Dataset(X_train, label=y_train, weight=train_weights.squeeze(),
                                  categorical_feature=categorical_features)
@@ -93,8 +95,10 @@ def lightgbm_categorical_training_pipeline(X_train, y_train, train_weights, X_cv
         model = lgb.train(params, train_data, num_boost_round=int(space['num_boost_round']),
                           valid_sets=[train_data, test_data],
                           callbacks=[lgb.early_stopping(stopping_rounds=early_stopping_rounds),
-                                     lgb.log_evaluation(period=verbose)],
+                                     lgb.log_evaluation(period=verbose),
+                                     lgb.record_evaluation(eval_results)],
                           categorical_feature=categorical_features)
+        plot_lgb_performance(eval_results)
     else:
         train_data = lgb.Dataset(X_train, label=y_train, weight=train_weights.squeeze(),
                                  categorical_feature=categorical_features)
@@ -102,6 +106,19 @@ def lightgbm_categorical_training_pipeline(X_train, y_train, train_weights, X_cv
         model = lgb.train(params, train_data, num_boost_round=int(space['num_boost_round']),
                           categorical_feature=categorical_features)
     return model
+
+
+def plot_lgb_performance(eval_results):
+    plt.figure(figsize=(10, 5))
+    for dataset, metrics in eval_results.items():
+        for metric_name, values in metrics.items():
+            plt.plot(values, label=f'{dataset} {metric_name}')
+    plt.xlabel('Iteration')
+    plt.ylabel('Metric Value')
+    plt.title('Train vs. CV Performance')
+    plt.legend()
+    plt.grid()
+    plt.show()
 
 
 def lightgbm_model_training(train_df, hyperparameters, cv_df=None, categorical_features=None, early_stopping_rounds=50,
@@ -187,13 +204,9 @@ def saving_to_csv(output_path, file_name):
                 raise ValueError("return object is not a dataframe, cannot save")
             os.makedirs(output_path, exist_ok=True)
             if os.path.exists(output_path + "\\{}.csv".format(file_name)):
-                df.to_csv(output_path + "\\{}.csv".format(file_name), index=False,
-                          mode='a', header=False)
-            else:
-                df.to_csv(output_path + "\\{}.csv".format(file_name), index=False,
-                          mode='w', header=True)
-            return df
-
+                df = pd.concat([df, pd.read_csv(output_path + "\\{}.csv".format(file_name))]).reset_index(drop=True)
+            df.to_csv(output_path + "\\{}.csv".format(file_name), index=False,
+                      mode='w', header=True)
         return saving_to_csv_wrapper
 
     return saving_to_csv_decorator
@@ -214,7 +227,8 @@ def time_taken_to_run_function():
 
 @time_taken_to_run_function()
 @saving_to_csv(os.getcwd(), 'results')
-def k_fold_cv(df, hyperparameters, n_folds=3, train_n_months=15, cv_n_months=3, categorical_features=None):
+def k_fold_cv(df, hyperparameters, n_folds=3, train_n_months=15, cv_n_months=3, categorical_features=None,
+              hyperopt_return=False):
     unique_dates = pd.to_datetime(df['date']).sort_values().unique()
     performance_df = pd.DataFrame()
     for fold in range(n_folds):
@@ -255,13 +269,28 @@ def k_fold_cv(df, hyperparameters, n_folds=3, train_n_months=15, cv_n_months=3, 
         params_df['train_loss'] = train_loss
         params_df['cv_loss'] = cv_loss
         params_df['model'] = 'lightgbm'
-
+        if hyperopt_return:
+            params_df['mode'] = 'hyperopt'
         params_df = pd.concat([params_df, feature_importance_df], axis=1).reset_index(drop=True)
         performance_df = pd.concat([performance_df, params_df]).reset_index(drop=True)
 
         gc.enable()
         gc.collect()
     return performance_df
+
+
+def hyperparameter_optimization_pipeline(optimization_space, max_evals=100, categorical_features=None):
+    trials = Trials()
+    best_hyper_params = fmin(
+        fn=lambda space: k_fold_cv(df, space, n_folds=1, train_n_months=15, cv_n_months=3,
+                                   categorical_features=categorical_features,
+                                   hyperopt_return=True),
+        space=optimization_space,  # This is the sampling space
+        algo=tpe.suggest,  # Hyperopt's algorithm for sampling
+        max_evals=max_evals,  # Maximum evaluations
+        trials=trials  # Trials object to track results
+    )
+    return best_hyper_params
 
 
 if __name__ == '__main__':
@@ -293,5 +322,6 @@ if __name__ == '__main__':
     df = pull_data_from_db("2000-01-01", "2002-01-01", db_path)
     df = pre_process_data(df)
     df = finding_3_mo_returns(df)
-    k_fold_cv(df, lgb_hyperparameters, n_folds=3, train_n_months=15, cv_n_months=3,
-              categorical_features=categorical_features)
+    # k_fold_cv(df, lgb_hyperparameters, n_folds=3, train_n_months=15, cv_n_months=3,
+    #           categorical_features=categorical_features)
+    hyperparameter_optimization_pipeline(hyperparameter_space, max_evals=100, categorical_features=categorical_features)
