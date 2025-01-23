@@ -1,10 +1,13 @@
-import pandas as pd
-import numpy as np
-from tqdm import tqdm
-from pandas.tseries.offsets import DateOffset
-import lightgbm as lgb
-from hyperopt import hp, STATUS_OK, fmin, Trials, tpe
+import os
+import time
 import warnings
+from functools import wraps
+import gc
+import lightgbm as lgb
+import numpy as np
+import pandas as pd
+from hyperopt import hp
+from tqdm import tqdm
 
 warnings.filterwarnings('ignore')
 pd.set_option('display.max_columns', None)
@@ -157,11 +160,63 @@ def evaluate_model(model, val_set, categorical_features=None, top_n_stock_picks=
     X_test, categorical_indices, y_test = categorify_and_return(categorical_features, val_set)
     y_pred = model.predict(X_test).reshape(X_test.shape[0], 1)
     val_set['y_pred'] = y_pred
-    return
+    loss = performance_evaluation(val_set, y_pred_col_name='y_pred', y_actual_col_name='returns_3_mo')
+    return loss
 
 
+def performance_evaluation(df, y_pred_col_name='y_pred', y_actual_col_name='returns_3_mo'):
+    df['y_actual_rank'] = df.groupby('date')[y_actual_col_name].rank(ascending=False, method='dense')
+    df['y_pred_rank'] = df.groupby('date')[y_pred_col_name].rank(ascending=False, method='dense')
+    df = df.sort_values(by=['date', 'y_actual_rank'], ascending=[True, True]).reset_index(drop=True)
+    df['loss_metric'] = abs(df['y_pred_rank'] - df['y_actual_rank'])
+    df.loc[((df[y_actual_col_name] > 0) &
+            (df[y_pred_col_name] < 0)), 'loss_metric'] = (df.loc[((df[y_actual_col_name] > 0) &
+                                                                  (df[y_pred_col_name] < 0)), 'loss_metric']) * 2
+    df.loc[((df[y_actual_col_name] < 0) &
+            (df[y_pred_col_name] > 0)), 'loss_metric'] = (df.loc[((df[y_actual_col_name] < 0) &
+                                                                  (df[y_pred_col_name] > 0)), 'loss_metric']) * 4
+    return df['loss_metric'].mean()
+
+
+def saving_to_csv(output_path, file_name):
+    def saving_to_csv_decorator(func):
+        @wraps(func)
+        def saving_to_csv_wrapper(*args, **kwargs):
+            df = func(*args, **kwargs)
+            if not isinstance(df, pd.DataFrame):
+                raise ValueError("return object is not a dataframe, cannot save")
+            os.makedirs(output_path, exist_ok=True)
+            if os.path.exists(output_path + "\\{}.csv".format(file_name)):
+                df.to_csv(output_path + "\\{}.csv".format(file_name), index=False,
+                          mode='a', header=False)
+            else:
+                df.to_csv(output_path + "\\{}.csv".format(file_name), index=False,
+                          mode='w', header=True)
+            return df
+
+        return saving_to_csv_wrapper
+
+    return saving_to_csv_decorator
+
+
+def time_taken_to_run_function():
+    def time_taken_to_run_function_decorator(func):
+        @wraps(func)
+        def time_taken_to_run_function_wrapper(*args, **kwargs):
+            start_time = time.time()
+            func(*args, **kwargs)
+            print(f"\n\nfunction: {func.__name__} took: {round(time.time() - start_time, 2)} seconds to run")
+
+        return time_taken_to_run_function_wrapper
+
+    return time_taken_to_run_function_decorator
+
+
+@time_taken_to_run_function()
+@saving_to_csv(os.getcwd(), 'results')
 def k_fold_cv(df, hyperparameters, n_folds=3, train_n_months=15, cv_n_months=3, categorical_features=None):
     unique_dates = pd.to_datetime(df['date']).sort_values().unique()
+    performance_df = pd.DataFrame()
     for fold in range(n_folds):
         val_end_date = unique_dates[-1] - pd.DateOffset(months=fold * cv_n_months)
         val_start_date = unique_dates[-1] - pd.DateOffset(months=(fold + 1) * cv_n_months)
@@ -177,8 +232,36 @@ def k_fold_cv(df, hyperparameters, n_folds=3, train_n_months=15, cv_n_months=3, 
                                                                            len(val_set['date'].unique())))
         model = lightgbm_model_training(train_set, hyperparameters, cv_df=val_set,
                                         categorical_features=categorical_features)
-        evaluate_model(model, val_set, categorical_features=categorical_features)
-        print("done")
+
+        train_loss = evaluate_model(model, train_set, categorical_features=categorical_features)
+        cv_loss = evaluate_model(model, val_set, categorical_features=categorical_features)
+        print("\n\n")
+        print("fold_no: {}, train_loss: {}, cv_loss: {}".format(fold, train_loss, cv_loss))
+
+        feature_importance_df = pd.DataFrame({
+            'feature': model.feature_name(),
+            'importance': model.feature_importance(importance_type='split')
+        }).set_index('feature').T.reset_index(drop=True)
+        feature_importance_df = (feature_importance_df / feature_importance_df.sum(axis=1)[0])
+
+        params_df = pd.DataFrame.from_dict(hyperparameters, orient='index').T
+
+        params_df['train_start_date'] = train_set['date'].astype(str).min()
+        params_df['train_end_date'] = train_set['date'].astype(str).max()
+        params_df['cv_start_date'] = val_set['date'].astype(str).min()
+        params_df['cv_end_date'] = val_set['date'].astype(str).max()
+
+        params_df['fold_no'] = fold + 1
+        params_df['train_loss'] = train_loss
+        params_df['cv_loss'] = cv_loss
+        params_df['model'] = 'lightgbm'
+
+        params_df = pd.concat([params_df, feature_importance_df], axis=1).reset_index(drop=True)
+        performance_df = pd.concat([performance_df, params_df]).reset_index(drop=True)
+
+        gc.enable()
+        gc.collect()
+    return performance_df
 
 
 if __name__ == '__main__':
@@ -210,5 +293,5 @@ if __name__ == '__main__':
     df = pull_data_from_db("2000-01-01", "2002-01-01", db_path)
     df = pre_process_data(df)
     df = finding_3_mo_returns(df)
-    k_fold_cv(df, lgb_hyperparameters, n_folds=2, train_n_months=15, cv_n_months=3,
+    k_fold_cv(df, lgb_hyperparameters, n_folds=3, train_n_months=15, cv_n_months=3,
               categorical_features=categorical_features)
