@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from hyperopt import hp, STATUS_OK, fmin, Trials, tpe
 from tqdm import tqdm
+import math
 
 warnings.filterwarnings('ignore')
 pd.set_option('display.max_columns', None)
@@ -164,7 +165,8 @@ def lightgbm_model_training(train_df, hyperparameters, cv_df=None, categorical_f
 
 def categorify_and_return(categorical_features, train_df):
     if categorical_features is not None:
-        train_df.loc[:, categorical_features] = train_df.loc[:, categorical_features].astype('category')
+        for col in categorical_features:
+            train_df[col] = train_df[col].astype('category')
         categorical_indices = [train_df.columns.get_loc(col) for col in categorical_features if col in train_df.columns]
     else:
         categorical_indices = []
@@ -207,6 +209,11 @@ def saving_to_csv(output_path, file_name):
                 df = pd.concat([df, pd.read_csv(output_path + "\\{}.csv".format(file_name))]).reset_index(drop=True)
             df.to_csv(output_path + "\\{}.csv".format(file_name), index=False,
                       mode='w', header=True)
+            try:
+                loss = df['cv_loss'].mean()
+            except:
+                loss = math.nan
+            return {'status': STATUS_OK, 'loss': loss}
         return saving_to_csv_wrapper
 
     return saving_to_csv_decorator
@@ -225,7 +232,6 @@ def time_taken_to_run_function():
     return time_taken_to_run_function_decorator
 
 
-@time_taken_to_run_function()
 @saving_to_csv(os.getcwd(), 'results')
 def k_fold_cv(df, hyperparameters, n_folds=3, train_n_months=15, cv_n_months=3, categorical_features=None,
               hyperopt_return=False):
@@ -282,13 +288,13 @@ def k_fold_cv(df, hyperparameters, n_folds=3, train_n_months=15, cv_n_months=3, 
 def hyperparameter_optimization_pipeline(optimization_space, max_evals=100, categorical_features=None):
     trials = Trials()
     best_hyper_params = fmin(
-        fn=lambda space: k_fold_cv(df, space, n_folds=1, train_n_months=15, cv_n_months=3,
+        fn=lambda space: k_fold_cv(df, space, n_folds=3, train_n_months=15, cv_n_months=3,
                                    categorical_features=categorical_features,
                                    hyperopt_return=True),
-        space=optimization_space,  # This is the sampling space
-        algo=tpe.suggest,  # Hyperopt's algorithm for sampling
-        max_evals=max_evals,  # Maximum evaluations
-        trials=trials  # Trials object to track results
+        space=optimization_space,
+        algo=tpe.suggest,
+        max_evals=max_evals,
+        trials=trials
     )
     return best_hyper_params
 
@@ -318,8 +324,8 @@ if __name__ == '__main__':
         'num_boost_round': hp.quniform('num_boost_round', 100, 5000, 50),
     }
     categorical_features = ['symbol']
-    db_path = "C:\\Users\\dhruv.suresh\\Downloads\\data.db\\data.db"
-    df = pull_data_from_db("2000-01-01", "2002-01-01", db_path)
+    db_path = "D:\\pre-program-python-trading-bot\\data.db\\data.db"
+    df = pull_data_from_db("2000-01-01", "2005-12-31", db_path)
     df = pre_process_data(df)
     df = finding_3_mo_returns(df)
     # k_fold_cv(df, lgb_hyperparameters, n_folds=3, train_n_months=15, cv_n_months=3,
