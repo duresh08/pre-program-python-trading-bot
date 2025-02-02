@@ -308,15 +308,13 @@ def calculate_pnl():
 
 def walk_forward_simulation(hyperparameters, train_n_months=15, categorical_features=None, start_date="2006-04-01",
                             final_end_date="2024-12-31", delta_months=3, top_n_picks=100,
-                            stock_allocation=10000):
+                            stock_allocation=10000, db_path="D:\\pre-program-python-trading-bot\\data.db\\data.db"):
     master_pnl_df = pd.DataFrame()
     while tqdm(start_date < final_end_date, 'parsing through date windows one at a time'):
         training_start_date = (pd.to_datetime(start_date, format='%Y-%m-%d') -
                                pd.DateOffset(months=train_n_months + delta_months)).strftime("%Y-%m-%d")
         training_end_date = (dt.datetime.strptime(start_date, "%Y-%m-%d") +
                              dt.timedelta(days=10)).strftime('%Y-%m-%d')
-
-        db_path = "D:\\pre-program-python-trading-bot\\data.db\\data.db"
 
         df = pull_data_from_db(training_start_date, training_end_date, db_path)
         df = pre_process_data(df)
@@ -335,11 +333,11 @@ def walk_forward_simulation(hyperparameters, train_n_months=15, categorical_feat
         pnl = (((1 + df['returns_3_mo']) * stock_allocation).sum() -
                top_n_picks * stock_allocation)
         master_pnl_df = pd.concat([master_pnl_df, pd.DataFrame({'date': [start_date],
-                                                                'pnl': [pnl]})]).reset_index(drop = True)
+                                                                'pnl': [pnl]})]).reset_index(drop=True)
 
         start_date = (pd.to_datetime(start_date, format='%Y-%m-%d') +
                       pd.DateOffset(months=delta_months)).strftime("%Y-%m-%d")
-        master_pnl_df.to_csv(os.getcwd() + '\\pnl_walk_1.csv', index = False)
+        master_pnl_df.to_csv(os.getcwd() + '\\pnl_walk_1.csv', index=False)
 
     return
 
@@ -369,10 +367,10 @@ if __name__ == '__main__':
         'num_boost_round': hp.quniform('num_boost_round', 100, 5000, 50),
     }
     categorical_features = ['symbol']
-    # db_path = "C:\\Users\\dhruv.suresh\\Downloads\\data.db\\data.db"
-    # df = pull_data_from_db("2000-01-01", "2005-12-31", db_path)
-    # df = pre_process_data(df)
-    # df = finding_3_mo_returns(df)
+    db_path = "C:\\Users\\dhruv.suresh\\Downloads\\data.db\\data.db"
+    df = pull_data_from_db("2000-01-01", "2002-01-01", db_path)
+    df = pre_process_data(df)
+    df = finding_3_mo_returns(df)
     # ------------------------------------------------------------------------------
     # k_fold_cv(df, lgb_hyperparameters, n_folds=3, train_n_months=15, cv_n_months=3,
     #           categorical_features=categorical_features)
@@ -380,5 +378,6 @@ if __name__ == '__main__':
     # hyperparameter_optimization_pipeline(df, hyperparameter_space, max_evals=100,
     #                                      categorical_features=categorical_features)
     # ------------------------------------------------------------------------------
-    walk_forward_simulation(lgb_hyperparameters, train_n_months=15, categorical_features=categorical_features,
-                            start_date="2006-04-01", final_end_date="2024-12-31", delta_months=3)
+    # walk_forward_simulation(lgb_hyperparameters, train_n_months=15, categorical_features=categorical_features,
+    #                         start_date="2006-04-01", final_end_date="2024-12-31", delta_months=3,
+    #                         db_path=db_path)
